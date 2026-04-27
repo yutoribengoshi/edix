@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Edix runtime
+*.comments.json
+
+# Logs
+*.log
+
+# Temp
+*.tmp
+*.bak
+~$*

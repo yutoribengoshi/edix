@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>法律文書プレビュー</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="folder-label">📁</span>
+      <span id="target-dir"></span>
+    </div>
+    <div class="topbar-right">
+      <span class="char-count" id="char-count" title="文字数（記号・空白除く）">0文字</span>
+      <button id="btn-search" title="検索 (Cmd+F)">🔍</button>
+      <span class="zoom-indicator" id="zoom-level" title="ピンチイン/アウトで拡大縮小">100%</span>
+      <button id="btn-toggle-numbers" title="岡口マクロ風自動番号付け（第1/1/(1)/ア）">№</button>
+      <button id="btn-toggle-edit" title="編集モード切替">✏️</button>
+      <button id="btn-print" title="印刷">🖨</button>
+      <button id="btn-toggle-comments" title="コメント表示切替" class="active">💬</button>
+      <button id="btn-toggle-sidebar" title="サイドバー表示切替" class="active">📁</button>
+      <button id="btn-reload" title="リロード">⟳</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="content">
+      <div id="empty-message" class="empty-message">
+        右のサイドバーからファイルを選択してください
+      </div>
+      <div class="preview-wrapper">
+        <article id="preview" class="preview-area" hidden></article>
+      </div>
+
+    </section>
+
+    <section class="editor" id="editor-pane">
+      <div class="editor-resize-handle" id="editor-resize-handle" title="ドラッグで境界調整">
+        <span class="resize-grip">⋮⋮⋮</span>
+      </div>
+      <div class="editor-header">
+        <span class="editor-title">📝 Markdownソース編集</span>
+        <div class="editor-header-right">
+          <span class="editor-status" id="editor-status">● 保存済</span>
+          <button class="editor-close" id="editor-close" title="編集を閉じる (Esc)">✕</button>
+        </div>
+      </div>
+      <textarea id="editor-textarea" spellcheck="false"></textarea>
+    </section>
+
+    <aside class="sidebar">
+      <h2>ファイル</h2>
+      <ul id="file-list"></ul>
+
+      <h2 class="comment-list-header">コメント</h2>
+      <ul id="comment-list"></ul>
+    </aside>
+  </main>
+
+  <!-- 検索バー -->
+  <div class="search-bar" id="search-bar" hidden>
+    <input type="text" id="search-input" placeholder="検索…" autocomplete="off">
+    <span class="search-info" id="search-info"></span>
+    <button id="search-prev" title="前へ (Shift+Enter)">↑</button>
+    <button id="search-next" title="次へ (Enter)">↓</button>
+    <button id="search-close" title="閉じる (Esc)">✕</button>
+  </div>
+
+  <!-- コメント入力ポップアップ（テンプレート） -->
+  <template id="comment-popup-template">
+    <div class="comment-popup">
+      <div class="comment-popup-header">
+        <span class="comment-popup-title">コメント</span>
+        <button class="comment-popup-close">×</button>
+      </div>
+      <div class="comment-popup-existing"></div>
+      <textarea class="comment-popup-input" placeholder="修正指示を書いてください（例: 「申立ての趣旨」を「申立の趣旨」に変更）"></textarea>
+      <div class="comment-popup-actions">
+        <button class="comment-popup-cancel">キャンセル</button>
+        <button class="comment-popup-save">保存</button>
+      </div>
+    </div>
+  </template>
+
+  <script src="/static/viewer.js"></script>
+</body>
+</html>
