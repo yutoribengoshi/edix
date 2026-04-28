@@ -26,7 +26,7 @@
 
 ```bash
 git clone https://github.com/yutoribengoshi/edix.git ~/dev/edix
-pip install markdown pymdown-extensions
+pip install markdown pymdown-extensions python-docx
 python3 ~/dev/edix/server.py [target_dir]    # → http://localhost:8765/
 ```
 
@@ -45,6 +45,7 @@ python3 ~/dev/edix/server.py [target_dir]    # → http://localhost:8765/
 | 🛡️ バックアップ | 編集ごとに `.edix-backup/` に世代保存・100世代/30日まで |
 | 🔄 復元 | 📚 履歴ボタンで世代一覧・ワンクリック復元 |
 | 🔍 検索 | Cmd+F 全マッチハイライト |
+| 📄 Word出力 | 📄ボタンで `.docx` ダウンロード（A4・游明朝・ページ番号付き） |
 | 🖨 印刷 | A4・ページ番号・UI非表示 |
 | 📑 拡張記法 | 目次 `[TOC]` ／ 改ページ ／ 自動連番 |
 | 📁 サイドバー | ファイル一覧・更新日・コメントバッジ |
@@ -141,7 +142,7 @@ comments.json を読む
 | **Edix** | **○ 全部1画面** |
 
 ### ロードマップ
-- v0.1 ✅ プレビュー・コメント・編集・検索・印刷・拡張記法
+- v0.1 ✅ プレビュー・コメント・編集・検索・印刷・拡張記法・Word出力・自動バックアップ
 - v0.2 — スキル名 `edix` リネーム / PyPI / README英訳 / 公開検討
 - v0.3 — MCP化 / PDF出力 / 縦書き / 比較ビュー / 共同編集
 
@@ -149,7 +150,7 @@ comments.json を読む
 
 ## 🛠 Stack
 
-Python 3.9+ / [`markdown`](https://python-markdown.github.io/) / [`pymdown-extensions`](https://facelessuser.github.io/pymdown-extensions/) / 標準HTML/CSS/JS
+Python 3.9+ / [`markdown`](https://python-markdown.github.io/) / [`pymdown-extensions`](https://facelessuser.github.io/pymdown-extensions/) / [`python-docx`](https://python-docx.readthedocs.io/)（docx出力用）/ 標準HTML/CSS/JS
 
 ## 📜 License & Author
 

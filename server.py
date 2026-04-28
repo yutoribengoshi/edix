@@ -22,6 +22,12 @@ from urllib.parse import urlparse, unquote, parse_qs
 
 import markdown
 
+# docx 出力モジュール（python-docx 未インストール時はNoneのまま）
+try:
+    from docx_export import markdown_to_docx
+except ImportError:
+    markdown_to_docx = None
+
 # ============================================================
 # 設定
 # ============================================================
@@ -430,6 +436,39 @@ class Handler(BaseHTTPRequestHandler):
                     "content": bk_path.read_text(encoding="utf-8"),
                 })
             except Exception as e:
+                self._send_json(500, {"error": str(e)})
+            return
+
+        # API: docx 出力
+        if path.startswith("/api/docx/"):
+            try:
+                md = self._resolve_md(path[len("/api/docx/"):])
+                if markdown_to_docx is None:
+                    self._send_json(500, {
+                        "error": "python-docx がインストールされていません。"
+                                 "pip install python-docx を実行してください。"
+                    })
+                    return
+                content = md.read_text(encoding="utf-8")
+                docx_bytes = markdown_to_docx(content)
+                # ファイル名を Content-Disposition で渡す（日本語対応：RFC 5987）
+                fname = md.stem + ".docx"
+                fname_q = fname.encode('utf-8').hex()
+                # 安全策：%エンコード形式
+                from urllib.parse import quote
+                fname_enc = quote(fname)
+                self._send(
+                    200, docx_bytes,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={
+                        "Content-Disposition":
+                            f"attachment; filename=\"{fname.encode('ascii', 'ignore').decode() or 'export'}.docx\"; "
+                            f"filename*=UTF-8''{fname_enc}"
+                    }
+                )
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
                 self._send_json(500, {"error": str(e)})
             return
 

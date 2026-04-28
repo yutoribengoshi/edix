@@ -123,6 +123,44 @@ async function manualSave() {
   await saveFile(content, { notify: true });
 }
 
+// docx エクスポート：APIを叩いてバイナリをダウンロード
+async function exportDocx() {
+  if (!state.currentFile) {
+    showToast("ファイルが選択されていません");
+    return;
+  }
+  showToast("📄 Word文書を生成中…");
+  try {
+    const r = await fetch(`/api/docx/${encodeURIComponent(state.currentFile)}`);
+    if (!r.ok) {
+      let msg = `${r.status}`;
+      try { const j = await r.json(); msg = j.error || msg; } catch {}
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    // ファイル名を Content-Disposition から取得（filename*=UTF-8''... 優先）
+    const cd = r.headers.get("Content-Disposition") || "";
+    let filename = "export.docx";
+    const m1 = cd.match(/filename\*=UTF-8''([^;]+)/i);
+    const m2 = cd.match(/filename="?([^";]+)"?/i);
+    if (m1) filename = decodeURIComponent(m1[1]);
+    else if (m2) filename = m2[1];
+    // ダウンロードトリガー
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`📄 ${filename} をダウンロードしました`);
+  } catch (e) {
+    console.error(e);
+    showToast(`❌ docx生成に失敗: ${e.message}`);
+  }
+}
+
 // バックアップ履歴
 async function openHistory() {
   if (!state.currentFile) {
@@ -916,6 +954,7 @@ function showToast(text) {
 // ============================================================
 function init() {
   $("#btn-print").addEventListener("click", () => window.print());
+  $("#btn-export-docx").addEventListener("click", exportDocx);
   $("#btn-toggle-comments").addEventListener("click", (e) => {
     document.body.classList.toggle("comments-hidden");
     e.currentTarget.classList.toggle("active");
