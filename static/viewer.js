@@ -774,16 +774,62 @@ function setupEditor() {
   });
 }
 
+// 段落テキストの正規化（snapshot との比較用、サーバ側 _normalize_for_hash と同じ）
+function normalizeForMatch(text) {
+  return String(text || "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+}
+
+// snapshot から現在のDOMで該当する段落要素を探す（ID不一致時のフォールバック）
+function findParagraphBySnapshot(snapshot) {
+  if (!snapshot) return null;
+  const target = normalizeForMatch(snapshot);
+  if (!target) return null;
+  const paragraphs = document.querySelectorAll('#preview [data-paragraph-id]');
+  // 完全一致を優先
+  for (const p of paragraphs) {
+    if (normalizeForMatch(p.textContent) === target) return p;
+  }
+  // 前方一致（編集で末尾が変わった場合）
+  for (const p of paragraphs) {
+    const cur = normalizeForMatch(p.textContent);
+    if (cur && (cur.startsWith(target.slice(0, 30)) || target.startsWith(cur.slice(0, 30)))) return p;
+  }
+  return null;
+}
+
 function attachPins() {
+  // 各コメントについて、現在のDOMに対応する paragraph_id を解決
+  // - 完全一致：そのまま
+  // - 不一致：snapshot から再マッチして再配置（IDも更新）
+  const orphans = [];  // 行方不明のコメント
+  state.currentComments.forEach(c => {
+    const found = document.querySelector(`#preview [data-paragraph-id="${CSS.escape(c.paragraph_id)}"]`);
+    if (found) return;  // OK
+    // フォールバック検索
+    const matched = findParagraphBySnapshot(c.paragraph_text_snapshot);
+    if (matched) {
+      // 静かに ID を最新に書き換え（次回保存時に永続化）
+      c.paragraph_id = matched.dataset.paragraphId;
+      c._remapped = true;
+    } else {
+      orphans.push(c);
+    }
+  });
+
   // 段落IDごとのコメント数マップ
   const counts = {};
   state.currentComments.forEach(c => {
+    if (orphans.includes(c)) return;
     counts[c.paragraph_id] = (counts[c.paragraph_id] || 0) + 1;
   });
 
   // 全段落要素にピンをセット
   document.querySelectorAll('#preview [data-paragraph-id]').forEach(p => {
-    // 既存のピン削除
     p.querySelectorAll('.comment-pin').forEach(x => x.remove());
     p.classList.remove('has-comment');
 
@@ -802,6 +848,13 @@ function attachPins() {
     p.appendChild(pin);
     if (count) p.classList.add('has-comment');
   });
+
+  // 行方不明コメントがあればトーストで通知
+  if (orphans.length > 0) {
+    showToast(`⚠ ${orphans.length}件のコメントの段落が見つかりません（サイドバーに表示）`);
+  }
+  // remap済みコメントを次回保存時に反映するため、状態を保持
+  state.commentOrphans = orphans;
 }
 
 function renderCommentList() {
@@ -811,13 +864,23 @@ function renderCommentList() {
     list.appendChild(el("li", { class: "empty" }, ["（まだコメントはありません）"]));
     return;
   }
+  const orphans = state.commentOrphans || [];
   state.currentComments.forEach(c => {
+    const isOrphan = orphans.includes(c);
+    const isRemapped = c._remapped;
+    const cls = "cm-status " + c.status + (isOrphan ? " orphan" : "");
     const li = el("li", {
+      class: isOrphan ? "orphan-comment" : "",
       onclick: () => scrollToParagraph(c.paragraph_id)
     }, [
-      el("div", { class: "cm-snippet" }, [c.paragraph_text_snapshot.slice(0, 30) + "…"]),
+      el("div", { class: "cm-snippet" }, [
+        (isOrphan ? "⚠ " : (isRemapped ? "🔄 " : "")) +
+        c.paragraph_text_snapshot.slice(0, 30) + "…"
+      ]),
       el("div", { class: "cm-text" }, [c.comment]),
-      el("span", { class: "cm-status " + c.status }, [c.status === "applied" ? "✓ 反映済" : "未反映"])
+      el("span", { class: cls }, [
+        isOrphan ? "段落不明" : (c.status === "applied" ? "✓ 反映済" : "未反映")
+      ])
     ]);
     list.appendChild(li);
   });

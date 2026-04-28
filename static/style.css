@@ -214,6 +214,8 @@ body.sidebar-hidden .sidebar {
 }
 #comment-list .cm-status.pending { background: #fde8c0; color: #8b6f47; }
 #comment-list .cm-status.applied { background: #c5e8d3; color: #2e6b3f; }
+#comment-list .cm-status.orphan { background: #fad6d6; color: #8b3a3a; }
+#comment-list .orphan-comment { background: #fef5f5; border-left: 3px solid #d97a7a; }
 
 /* ----- コンテンツエリア ----- */
 .content {

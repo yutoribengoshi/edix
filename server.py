@@ -71,17 +71,47 @@ LOCK = threading.Lock()
 # ============================================================
 # Markdown レンダリング
 # ============================================================
+def _normalize_for_hash(text: str) -> str:
+    """ハッシュ用にテキストを正規化（空白圧縮・先頭末尾trim）"""
+    # HTMLタグを除去
+    text = re.sub(r'<[^>]+>', '', text)
+    # &amp; などの参照を最低限戻す
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'")
+    # 連続空白を1個に
+    text = re.sub(r'\s+', ' ', text).strip()
+    # 先頭100文字
+    return text[:100]
+
+
 def add_paragraph_ids(html: str) -> str:
-    """段落・見出しに data-paragraph-id を付与（コメント機能用）"""
-    counter = [0]
+    """段落・見出しに data-paragraph-id を付与。
+    内容ハッシュベースのIDを使うので、他の段落の挿入/削除があっても
+    既存段落のIDは変わらない。同一テキストの段落には -2, -3 を付ける。"""
+    import hashlib
+    seen_counts = {}  # 同一ハッシュの出現回数
+
+    def make_id(inner_text: str) -> str:
+        normalized = _normalize_for_hash(inner_text)
+        if not normalized:
+            normalized = '(empty)'
+        h = hashlib.sha1(normalized.encode('utf-8')).hexdigest()[:8]
+        n = seen_counts.get(h, 0)
+        seen_counts[h] = n + 1
+        return f"p-{h}" if n == 0 else f"p-{h}-{n+1}"
+
+    # h1-h6, p, li, blockquote タグに付与
+    # 開始タグから対応する終了タグまでをマッチして中身を取得
+    target_tags = ('h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'blockquote')
+    pattern = re.compile(
+        r'<(' + '|'.join(target_tags) + r')([^>]*)>(.*?)</\1>',
+        re.DOTALL
+    )
 
     def replacer(m):
-        counter[0] += 1
-        tag, attrs = m.group(1), m.group(2) or ""
-        return f'<{tag}{attrs} data-paragraph-id="p-{counter[0]}">'
+        tag, attrs, inner = m.group(1), m.group(2) or "", m.group(3)
+        pid = make_id(inner)
+        return f'<{tag}{attrs} data-paragraph-id="{pid}">{inner}</{tag}>'
 
-    # h1-h6, p タグに付与
-    pattern = re.compile(r'<(h[1-6]|p|li|blockquote)([^>]*)>')
     return pattern.sub(replacer, html)
 
 
