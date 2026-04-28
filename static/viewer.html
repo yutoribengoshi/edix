@@ -17,6 +17,8 @@
       <button id="btn-search" title="検索 (Cmd+F)">🔍</button>
       <span class="zoom-indicator" id="zoom-level" title="ピンチイン/アウトで拡大縮小">100%</span>
       <button id="btn-toggle-numbers" title="岡口マクロ風自動番号付け（第1/1/(1)/ア）">№</button>
+      <button id="btn-save" title="保存 (Cmd+S)">💾</button>
+      <button id="btn-history" title="バックアップ履歴">📚</button>
       <button id="btn-toggle-edit" title="編集モード切替">✏️</button>
       <button id="btn-print" title="印刷">🖨</button>
       <button id="btn-toggle-comments" title="コメント表示切替" class="active">💬</button>
@@ -44,6 +46,7 @@
         <span class="editor-title">📝 Markdownソース編集</span>
         <div class="editor-header-right">
           <span class="editor-status" id="editor-status">● 保存済</span>
+          <button class="editor-save-btn" id="editor-save-btn" title="保存 (Cmd+S)">💾 保存</button>
           <button class="editor-close" id="editor-close" title="編集を閉じる (Esc)">✕</button>
         </div>
       </div>
@@ -66,6 +69,22 @@
     <button id="search-prev" title="前へ (Shift+Enter)">↑</button>
     <button id="search-next" title="次へ (Enter)">↓</button>
     <button id="search-close" title="閉じる (Esc)">✕</button>
+  </div>
+
+  <!-- バックアップ履歴モーダル -->
+  <div class="history-modal" id="history-modal" hidden>
+    <div class="history-modal-backdrop"></div>
+    <div class="history-modal-content">
+      <div class="history-modal-header">
+        <span>📚 バックアップ履歴</span>
+        <button class="history-close" id="history-close" title="閉じる (Esc)">✕</button>
+      </div>
+      <div class="history-modal-info" id="history-info">読み込み中…</div>
+      <ul class="history-list" id="history-list"></ul>
+      <div class="history-modal-footer">
+        編集ごとに自動保存・直近100世代/30日まで保持
+      </div>
+    </div>
   </div>
 
   <!-- コメント入力ポップアップ（テンプレート） -->

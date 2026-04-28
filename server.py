@@ -31,6 +31,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SCRIPT_DIR / "static"
 POLL_INTERVAL = 1.0  # ファイル監視ポーリング間隔（秒）
 
+# バックアップ設定
+BACKUP_DIR_NAME = ".edix-backup"
+BACKUP_KEEP_GENERATIONS = 100  # 直近何世代まで保持
+BACKUP_KEEP_DAYS = 30  # 何日経過したら削除
+
 MD_EXTENSIONS = [
     'extra',           # tables, fenced_code, footnotes, etc.
     'toc',             # 目次
@@ -156,6 +161,105 @@ def notify_sse(data: dict):
 def comments_path(md_path: Path) -> Path:
     """対応する comments.json のパス"""
     return md_path.with_suffix(md_path.suffix + ".comments.json")
+
+
+# ============================================================
+# 自動バックアップ
+# ============================================================
+def backup_dir() -> Path:
+    """バックアップディレクトリのパス（target_dir 配下）"""
+    return TARGET_DIR / BACKUP_DIR_NAME
+
+
+def make_backup(md_path: Path) -> Path:
+    """ファイル保存時のスナップショット作成。返り値はバックアップファイルパス。"""
+    if not md_path.exists():
+        return None
+    bdir = backup_dir()
+    bdir.mkdir(exist_ok=True)
+    # サブディレクトリ構造を平坦化（区切りを __ に）
+    rel = md_path.relative_to(TARGET_DIR)
+    flat_name = str(rel).replace(os.sep, "__")
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    bk = bdir / f"{ts}__{flat_name}"
+    try:
+        bk.write_bytes(md_path.read_bytes())
+    except Exception as e:
+        print(f"[backup error] {e}", file=sys.stderr)
+        return None
+    return bk
+
+
+def cleanup_backups():
+    """保持ポリシーに従って古いバックアップを削除。
+    - 各ファイルにつき直近 BACKUP_KEEP_GENERATIONS 世代まで保持
+    - BACKUP_KEEP_DAYS を超えたものは削除
+    """
+    bdir = backup_dir()
+    if not bdir.exists():
+        return
+    now = time.time()
+    age_threshold = BACKUP_KEEP_DAYS * 86400
+
+    # ファイル名（接尾辞）でグルーピング
+    groups = {}
+    for f in bdir.iterdir():
+        if not f.is_file():
+            continue
+        name = f.name
+        # 形式: YYYYMMDD-HHMMSS__<flat_name>
+        parts = name.split("__", 1)
+        if len(parts) < 2:
+            continue
+        suffix = parts[1]
+        groups.setdefault(suffix, []).append(f)
+
+    for suffix, files in groups.items():
+        # 新しい順にソート
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for i, f in enumerate(files):
+            try:
+                age = now - f.stat().st_mtime
+                if i >= BACKUP_KEEP_GENERATIONS or age > age_threshold:
+                    f.unlink()
+            except Exception:
+                pass
+
+
+def list_backups(md_path: Path) -> list:
+    """指定 md ファイルのバックアップ一覧を新しい順で返す"""
+    bdir = backup_dir()
+    if not bdir.exists():
+        return []
+    rel = md_path.relative_to(TARGET_DIR)
+    flat_name = str(rel).replace(os.sep, "__")
+    candidates = []
+    for f in bdir.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.endswith(f"__{flat_name}"):
+            candidates.append(f)
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [
+        {
+            "filename": c.name,
+            "timestamp": datetime.fromtimestamp(c.stat().st_mtime).isoformat(timespec="seconds"),
+            "size": c.stat().st_size,
+        }
+        for c in candidates
+    ]
+
+
+def restore_backup(md_path: Path, backup_filename: str) -> bool:
+    """バックアップから復元。成功時 True。復元前に現状もバックアップ。"""
+    bdir = backup_dir()
+    bk = bdir / backup_filename
+    if not bk.exists() or not bk.is_file():
+        return False
+    # 復元前に現状をバックアップ
+    make_backup(md_path)
+    md_path.write_bytes(bk.read_bytes())
+    return True
 
 
 def load_comments(md_path: Path) -> dict:
@@ -296,6 +400,39 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": str(e)})
             return
 
+        # API: バックアップ一覧
+        if path.startswith("/api/backups/"):
+            try:
+                md = self._resolve_md(path[len("/api/backups/"):])
+                self._send_json(200, {
+                    "path": str(md.relative_to(TARGET_DIR)),
+                    "backups": list_backups(md)
+                })
+            except Exception as e:
+                self._send_json(404, {"error": str(e)})
+            return
+
+        # API: バックアップ本体取得
+        if path.startswith("/api/backup-content/"):
+            try:
+                rest = path[len("/api/backup-content/"):]
+                bk_path = backup_dir() / rest
+                if not bk_path.exists() or not bk_path.is_file():
+                    self._send_json(404, {"error": "not found"})
+                    return
+                # 安全：backup_dir 配下に限定
+                bk_path = bk_path.resolve()
+                if not str(bk_path).startswith(str(backup_dir().resolve())):
+                    self._send_json(403, {"error": "forbidden"})
+                    return
+                self._send_json(200, {
+                    "filename": bk_path.name,
+                    "content": bk_path.read_text(encoding="utf-8"),
+                })
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+            return
+
         # API: コメント取得
         if path.startswith("/api/comments/"):
             try:
@@ -339,7 +476,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         path = unquote(url.path)
 
-        # API: ファイル保存（編集機能）
+        # API: ファイル保存（編集機能・自動バックアップ付き）
         if path.startswith("/api/file/"):
             try:
                 md = self._resolve_md(path[len("/api/file/"):])
@@ -347,12 +484,41 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.rfile.read(length).decode("utf-8")
                 payload = json.loads(body)
                 content = payload.get("content", "")
+                # 上書き前にバックアップ
+                bk = make_backup(md) if md.exists() else None
                 md.write_text(content, encoding="utf-8")
+                # 古いバックアップを掃除（軽い処理）
+                try:
+                    cleanup_backups()
+                except Exception:
+                    pass
                 self._send_json(200, {
                     "path": str(md.relative_to(TARGET_DIR)),
                     "saved": True,
-                    "size": len(content)
+                    "size": len(content),
+                    "backup": bk.name if bk else None,
+                    "saved_at": datetime.now().isoformat(timespec="seconds")
                 })
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+            return
+
+        # API: バックアップから復元
+        if path.startswith("/api/restore/"):
+            try:
+                md = self._resolve_md(path[len("/api/restore/"):])
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(body)
+                bk_name = payload.get("backup", "")
+                if not bk_name:
+                    self._send_json(400, {"error": "backup filename required"})
+                    return
+                ok = restore_backup(md, bk_name)
+                if ok:
+                    self._send_json(200, {"restored": True, "backup": bk_name})
+                else:
+                    self._send_json(404, {"error": "backup not found"})
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
             return

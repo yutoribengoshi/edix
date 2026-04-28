@@ -40,10 +40,13 @@ python3 ~/dev/edix/server.py [target_dir]    # → http://localhost:8765/
 |---|---|
 | 📄 プレビュー | A4 Word レイアウト・游明朝・ピンチズーム |
 | 💬 コメント | 段落クリック→ポップアップ→保存→AI反映 |
-| 📝 編集 | 下部スライドアップ・スクロール同期・自動保存 |
+| 📝 編集 | 下部スライドアップ・スクロール同期 |
+| 💾 保存 | 自動保存（600ms）／Cmd+S／💾ボタン |
+| 🛡️ バックアップ | 編集ごとに `.edix-backup/` に世代保存・100世代/30日まで |
+| 🔄 復元 | 📚 履歴ボタンで世代一覧・ワンクリック復元 |
 | 🔍 検索 | Cmd+F 全マッチハイライト |
 | 🖨 印刷 | A4・ページ番号・UI非表示 |
-| 📚 拡張記法 | 目次 `[TOC]` ／ 改ページ ／ 自動連番 |
+| 📑 拡張記法 | 目次 `[TOC]` ／ 改ページ ／ 自動連番 |
 | 📁 サイドバー | ファイル一覧・更新日・コメントバッジ |
 
 すべて画面切替なし。コメントしたら、AIに「反映して」と頼むだけ。
@@ -111,4 +114,4 @@ Python 3.9+ / [`markdown`](https://python-markdown.github.io/) / [`pymdown-exten
 
 ## 📜 License & Author
 
-未定（MIT予定） / [@yutoribengoshi](https://github.com/yutoribengoshi) + Claude Code
+[MIT License](LICENSE) / [@yutoribengoshi](https://github.com/yutoribengoshi) + Claude Code

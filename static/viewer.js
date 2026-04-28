@@ -88,7 +88,7 @@ async function loadFile(filePath) {
   state.lastSavedContent = fileData.content;
 }
 
-async function saveFile(content) {
+async function saveFile(content, opts = {}) {
   setEditorStatus("saving");
   try {
     const r = await fetch(`/api/file/${encodeURIComponent(state.currentFile)}`, {
@@ -97,12 +97,98 @@ async function saveFile(content) {
       body: JSON.stringify({ content })
     });
     if (!r.ok) throw new Error(`${r.status}`);
+    const data = await r.json();
     state.lastSavedContent = content;
     setEditorStatus("clean");
+    if (opts.notify) {
+      const t = data.saved_at ? data.saved_at.replace("T", " ") : "";
+      showToast(`💾 保存しました（${t}）`);
+    }
+    return data;
   } catch (e) {
     console.error(e);
     setEditorStatus("error");
+    if (opts.notify) showToast(`❌ 保存に失敗: ${e.message}`);
+    return null;
   }
+}
+
+// 手動保存：編集モードならtextareaを、未開なら現在のMarkdownを再保存
+async function manualSave() {
+  if (!state.currentFile) {
+    showToast("ファイルが選択されていません");
+    return;
+  }
+  const content = state.editMode ? $("#editor-textarea").value : (state.currentMarkdown || "");
+  await saveFile(content, { notify: true });
+}
+
+// バックアップ履歴
+async function openHistory() {
+  if (!state.currentFile) {
+    showToast("ファイルが選択されていません");
+    return;
+  }
+  const modal = $("#history-modal");
+  const list = $("#history-list");
+  const info = $("#history-info");
+  modal.hidden = false;
+  info.textContent = `${state.currentFile} の履歴を読み込み中…`;
+  list.innerHTML = "";
+  try {
+    const r = await fetch(`/api/backups/${encodeURIComponent(state.currentFile)}`);
+    const data = await r.json();
+    if (!data.backups || data.backups.length === 0) {
+      info.textContent = `${state.currentFile} のバックアップはまだありません（編集して保存すると自動作成されます）`;
+      return;
+    }
+    info.textContent = `${state.currentFile}：${data.backups.length} 世代のバックアップ`;
+    data.backups.forEach(bk => {
+      const li = el("li", {}, [
+        el("span", { class: "h-time" }, [bk.timestamp.replace("T", " ")]),
+        el("span", { class: "h-size" }, [`${(bk.size/1024).toFixed(1)} KB`]),
+        el("div", { class: "h-actions" }, [
+          el("button", {
+            onclick: async () => {
+              const r2 = await fetch(`/api/backup-content/${encodeURIComponent(bk.filename)}`);
+              const d2 = await r2.json();
+              if (d2.content !== undefined) {
+                showToast(`📄 ${bk.filename} の内容を表示`);
+                // シンプル：alertで先頭500字だけ
+                alert(d2.content.substring(0, 500) + (d2.content.length > 500 ? "\n\n...(以下略)" : ""));
+              }
+            }
+          }, ["内容"]),
+          el("button", {
+            class: "h-restore",
+            onclick: async () => {
+              if (!confirm(`このバックアップ（${bk.timestamp.replace("T", " ")}）から復元しますか？\n現在の内容は新たなバックアップとして保存されます。`)) return;
+              const r3 = await fetch(`/api/restore/${encodeURIComponent(state.currentFile)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ backup: bk.filename })
+              });
+              const d3 = await r3.json();
+              if (d3.restored) {
+                showToast(`✓ 復元しました（${bk.timestamp.replace("T", " ")}）`);
+                modal.hidden = true;
+                await loadFile(state.currentFile);
+              } else {
+                showToast(`❌ 復元失敗: ${d3.error || "不明なエラー"}`);
+              }
+            }
+          }, ["復元"])
+        ])
+      ]);
+      list.appendChild(li);
+    });
+  } catch (e) {
+    info.textContent = `エラー: ${e.message}`;
+  }
+}
+
+function closeHistory() {
+  $("#history-modal").hidden = true;
 }
 
 async function postComment(action, payload) {
@@ -859,6 +945,16 @@ function init() {
   setupScrollSync();
   setupSearch();
 
+  // 保存ボタン（ヘッダー＋編集ペイン）
+  $("#btn-save").addEventListener("click", manualSave);
+  const editorSaveBtn = $("#editor-save-btn");
+  if (editorSaveBtn) editorSaveBtn.addEventListener("click", manualSave);
+
+  // 履歴ボタン
+  $("#btn-history").addEventListener("click", openHistory);
+  $("#history-close").addEventListener("click", closeHistory);
+  document.querySelector(".history-modal-backdrop").addEventListener("click", closeHistory);
+
 
   // サイドバー切替
   $("#btn-toggle-sidebar").addEventListener("click", (e) => {
@@ -888,16 +984,24 @@ function init() {
   // キーボードショートカット
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      // ポップアップが開いていればそれを閉じる、編集モードなら編集を閉じる
+      // ポップアップ → 履歴モーダル → 検索 → 編集モードの順に閉じる
       if (state.popup) {
         closePopup();
+      } else if (!$("#history-modal").hidden) {
+        closeHistory();
       } else if (state.editMode) {
         closeEditMode();
       }
       return;
     }
-    // Ctrl/Cmd + ズーム / 検索
+    // Ctrl/Cmd + ズーム / 検索 / 保存
     if (e.metaKey || e.ctrlKey) {
+      if (e.key === "s") {
+        // グローバル Cmd+S（編集モード以外でも効く）
+        e.preventDefault();
+        manualSave();
+        return;
+      }
       if (e.key === "=" || e.key === "+") {
         e.preventDefault();
         zoomIn();

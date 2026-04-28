@@ -18,6 +18,7 @@ Thumbs.db
 
 # Edix runtime
 *.comments.json
+.edix-backup/
 
 # Logs
 *.log
