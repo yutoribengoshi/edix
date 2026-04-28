@@ -593,6 +593,38 @@ body:not(.editor-open) .editor {
   background: linear-gradient(to right, transparent 0, transparent calc(100% - 4px), var(--comment-pin) calc(100% - 4px), var(--comment-pin) 100%);
 }
 
+/* テーブル行（tr）のコメント対応：tr に position:relative は table 配下では効かないので、
+   最後のセル（td:last-child）にピンを絶対配置する */
+.preview-area tr[data-paragraph-id] {
+  position: relative;
+}
+.preview-area tr[data-paragraph-id]:hover {
+  background: rgba(255, 248, 237, 0.6);
+}
+.preview-area td.has-comment-pin-cell,
+.preview-area th.has-comment-pin-cell {
+  position: relative;
+}
+.preview-area td.has-comment-pin-cell .comment-pin,
+.preview-area th.has-comment-pin-cell .comment-pin {
+  right: -28px;  /* セルの右外側に配置 */
+  top: 50%;
+  transform: translateY(-50%);
+}
+.preview-area td.has-comment-pin-cell .comment-pin:hover,
+.preview-area th.has-comment-pin-cell .comment-pin:hover {
+  transform: translateY(-50%) scale(1.15);
+}
+/* tr ホバー時にピンを表示 */
+.preview-area tr[data-paragraph-id]:hover .comment-pin {
+  opacity: 1;
+}
+/* コメントあり tr の左罫線で目印 */
+.preview-area tr[data-paragraph-id].has-comment td:first-child,
+.preview-area tr[data-paragraph-id].has-comment th:first-child {
+  border-left: 3px solid var(--comment-pin);
+}
+
 /* ----- コメントポップアップ ----- */
 .comment-popup {
   position: absolute;

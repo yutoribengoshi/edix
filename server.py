@@ -99,9 +99,9 @@ def add_paragraph_ids(html: str) -> str:
         seen_counts[h] = n + 1
         return f"p-{h}" if n == 0 else f"p-{h}-{n+1}"
 
-    # h1-h6, p, li, blockquote タグに付与
+    # h1-h6, p, li, blockquote, tr タグに付与（trでテーブル行コメント対応）
     # 開始タグから対応する終了タグまでをマッチして中身を取得
-    target_tags = ('h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'blockquote')
+    target_tags = ('h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'blockquote', 'tr')
     pattern = re.compile(
         r'<(' + '|'.join(target_tags) + r')([^>]*)>(.*?)</\1>',
         re.DOTALL

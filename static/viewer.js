@@ -845,7 +845,19 @@ function attachPins() {
       }
     }, [count ? String(count) : "💬"]);
 
-    p.appendChild(pin);
+    // tr 要素は td の子しか持てないので、最後の td/th 内に挿入する
+    if (p.tagName === 'TR') {
+      const lastCell = p.querySelector('td:last-child, th:last-child');
+      if (lastCell) {
+        // セルの右上に絶対配置するためにマーカークラスを追加
+        lastCell.classList.add('has-comment-pin-cell');
+        lastCell.appendChild(pin);
+      } else {
+        p.appendChild(pin);  // フォールバック
+      }
+    } else {
+      p.appendChild(pin);
+    }
     if (count) p.classList.add('has-comment');
   });
 
