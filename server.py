@@ -42,6 +42,15 @@ BACKUP_DIR_NAME = ".edix-backup"
 BACKUP_KEEP_GENERATIONS = 100  # 直近何世代まで保持
 BACKUP_KEEP_DAYS = 30  # 何日経過したら削除
 
+# ============================================================
+# セキュリティ設定
+# ============================================================
+MAX_BODY_SIZE = 10 * 1024 * 1024     # POST 上限 10MB（DoS対策）
+MAX_SSE_CLIENTS = 32                  # SSE 同時接続上限
+ALLOWED_HOSTS = set()                 # 起動時に "127.0.0.1:PORT" 等を入れる
+ALLOW_REMOTE = False                  # --host 0.0.0.0 起動時のみ True
+SECURITY_TOKEN = ""                   # ALLOW_REMOTE時に必須化される乱数トークン
+
 MD_EXTENSIONS = [
     'extra',           # tables, fenced_code, footnotes, etc.
     'toc',             # 目次
@@ -115,15 +124,46 @@ def render_markdown(md_text: str) -> str:
 # ============================================================
 # ファイル監視
 # ============================================================
+def _iter_md_files(target: Path):
+    """target_dir 配下の .md ファイルをシンボリックリンク追従なしで列挙。
+    隠しディレクトリ・comments.json は除外。"""
+    # rglob は内部的に follow_symlinks=True なので、自前で歩く
+    target_resolved = target.resolve()
+    stack = [target_resolved]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            try:
+                # シンボリックリンクは無視（target外脱出を防ぐ）
+                if p.is_symlink():
+                    continue
+                if p.is_dir():
+                    if p.name.startswith("."):
+                        continue
+                    stack.append(p)
+                elif p.is_file():
+                    if p.suffix != ".md":
+                        continue
+                    if p.name.endswith(".comments.json"):
+                        continue
+                    if any(part.startswith(".") for part in p.relative_to(target_resolved).parts):
+                        continue
+                    yield p
+            except OSError:
+                continue
+
+
 def file_watcher():
     """1秒ごとに対象フォルダ内 .md の mtime をチェックし、変更があればSSEで通知"""
     global FILE_MTIMES
     while True:
         try:
             current = {}
-            for p in TARGET_DIR.rglob("*.md"):
-                if any(part.startswith(".") for part in p.parts):
-                    continue
+            for p in _iter_md_files(TARGET_DIR):
                 try:
                     current[str(p)] = p.stat().st_mtime
                 except OSError:
@@ -178,58 +218,75 @@ def backup_dir() -> Path:
 
 
 def make_backup(md_path: Path) -> Path:
-    """ファイル保存時のスナップショット作成。返り値はバックアップファイルパス。"""
+    """ファイル保存時のスナップショット作成（atomic）。
+    一時ファイル → os.replace で書き込み完了を保証。
+    パーミッションは 0o600（オーナーのみ読み書き）に制限。"""
     if not md_path.exists():
         return None
-    bdir = backup_dir()
-    bdir.mkdir(exist_ok=True)
-    # サブディレクトリ構造を平坦化（区切りを __ に）
-    rel = md_path.relative_to(TARGET_DIR)
-    flat_name = str(rel).replace(os.sep, "__")
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    bk = bdir / f"{ts}__{flat_name}"
-    try:
-        bk.write_bytes(md_path.read_bytes())
-    except Exception as e:
-        print(f"[backup error] {e}", file=sys.stderr)
-        return None
-    return bk
+    with LOCK:  # cleanup_backups と競合しないよう排他
+        bdir = backup_dir()
+        bdir.mkdir(exist_ok=True)
+        try:
+            os.chmod(bdir, 0o700)
+        except OSError:
+            pass
+        rel = md_path.relative_to(TARGET_DIR)
+        flat_name = str(rel).replace(os.sep, "__")
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        bk = bdir / f"{ts}__{flat_name}"
+        tmp = bdir / f".{ts}__{flat_name}.tmp"
+        try:
+            import shutil
+            shutil.copy2(str(md_path), str(tmp))
+            os.replace(str(tmp), str(bk))
+            try:
+                os.chmod(bk, 0o600)
+            except OSError:
+                pass
+        except Exception as e:
+            print(f"[backup error] {e}", file=sys.stderr)
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            return None
+        return bk
 
 
 def cleanup_backups():
-    """保持ポリシーに従って古いバックアップを削除。
+    """保持ポリシーに従って古いバックアップを削除（LOCK下で安全に実行）。
     - 各ファイルにつき直近 BACKUP_KEEP_GENERATIONS 世代まで保持
     - BACKUP_KEEP_DAYS を超えたものは削除
     """
-    bdir = backup_dir()
-    if not bdir.exists():
-        return
-    now = time.time()
-    age_threshold = BACKUP_KEEP_DAYS * 86400
+    with LOCK:  # make_backup と競合しないよう排他
+        bdir = backup_dir()
+        if not bdir.exists():
+            return
+        now = time.time()
+        age_threshold = BACKUP_KEEP_DAYS * 86400
 
-    # ファイル名（接尾辞）でグルーピング
-    groups = {}
-    for f in bdir.iterdir():
-        if not f.is_file():
-            continue
-        name = f.name
-        # 形式: YYYYMMDD-HHMMSS__<flat_name>
-        parts = name.split("__", 1)
-        if len(parts) < 2:
-            continue
-        suffix = parts[1]
-        groups.setdefault(suffix, []).append(f)
+        groups = {}
+        for f in bdir.iterdir():
+            if not f.is_file():
+                continue
+            if f.name.startswith("."):  # 一時ファイル（.tmp等）はスキップ
+                continue
+            parts = f.name.split("__", 1)
+            if len(parts) < 2:
+                continue
+            suffix = parts[1]
+            groups.setdefault(suffix, []).append(f)
 
-    for suffix, files in groups.items():
-        # 新しい順にソート
-        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        for i, f in enumerate(files):
-            try:
-                age = now - f.stat().st_mtime
-                if i >= BACKUP_KEEP_GENERATIONS or age > age_threshold:
-                    f.unlink()
-            except Exception:
-                pass
+        for suffix, files in groups.items():
+            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            for i, f in enumerate(files):
+                try:
+                    age = now - f.stat().st_mtime
+                    if i >= BACKUP_KEEP_GENERATIONS or age > age_threshold:
+                        f.unlink()
+                except Exception:
+                    pass
 
 
 def list_backups(md_path: Path) -> list:
@@ -288,13 +345,86 @@ def save_comments(md_path: Path, data: dict):
 
 
 # ============================================================
+# セキュリティログ（最低限：起動時刻・拒否・POST のみ stderr）
+# ============================================================
+def sec_log(level: str, msg: str):
+    """セキュリティ関連ログ。stderrに timestamp 付きで残す。"""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[edix {ts}] [{level}] {msg}", file=sys.stderr, flush=True)
+
+
+# ============================================================
 # HTTP ハンドラ
 # ============================================================
 class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
-        # ログを抑制（デフォルトはstderrに毎リクエスト出る）
+        # 通常リクエストのログは抑制（うるさいため）。
+        # 重要イベントは sec_log() で別経路に出す。
         pass
+
+    # ------------------------------------------------------------
+    # セキュリティ関連ヘルパー
+    # ------------------------------------------------------------
+    def _check_origin(self) -> bool:
+        """Host / Origin / Sec-Fetch-Site を検証。
+        DNS rebinding と簡易 CSRF 対策。
+        - Host ヘッダが ALLOWED_HOSTS（127.0.0.1:PORT, localhost:PORT 等）であること
+        - Origin がある場合は同一オリジンであること
+        - Sec-Fetch-Site が cross-site なら拒否
+        """
+        host = self.headers.get("Host", "")
+        if host not in ALLOWED_HOSTS:
+            sec_log("DENY", f"bad Host header: {host!r} from {self.client_address[0]} {self.command} {self.path}")
+            return False
+
+        origin = self.headers.get("Origin")
+        if origin:
+            # http://127.0.0.1:8765 のような形式を期待
+            try:
+                from urllib.parse import urlparse as _u
+                op = _u(origin)
+                if op.netloc not in ALLOWED_HOSTS:
+                    sec_log("DENY", f"bad Origin: {origin!r} from {self.client_address[0]}")
+                    return False
+            except Exception:
+                sec_log("DENY", f"unparseable Origin: {origin!r}")
+                return False
+
+        sfs = self.headers.get("Sec-Fetch-Site")
+        if sfs and sfs not in ("same-origin", "same-site", "none"):
+            sec_log("DENY", f"Sec-Fetch-Site={sfs!r} from {self.client_address[0]}")
+            return False
+
+        # ALLOW_REMOTE 時はトークン必須
+        if ALLOW_REMOTE and SECURITY_TOKEN:
+            tok = self.headers.get("X-Edix-Token") or ""
+            if not tok:
+                # URL パラメータからも受け取る
+                from urllib.parse import urlparse as _u, parse_qs as _q
+                qs = _q(_u(self.path).query)
+                tok = (qs.get("token") or [""])[0]
+            if tok != SECURITY_TOKEN:
+                sec_log("DENY", f"missing/invalid token from {self.client_address[0]}")
+                return False
+        return True
+
+    def _read_body(self) -> bytes:
+        """Content-Length 上限を強制してボディ読み取り。超過時は ValueError。"""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length < 0 or length > MAX_BODY_SIZE:
+            raise ValueError(f"body too large: {length}")
+        if length == 0:
+            return b""
+        return self.rfile.read(length)
+
+    def _check_content_type_json(self) -> bool:
+        """POST に application/json を強制（CSRF の simple-request 経路を遮断）"""
+        ct = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        return ct == "application/json"
 
     def _send(self, code: int, body: bytes, content_type: str = "text/html; charset=utf-8",
               headers: dict = None):
@@ -328,15 +458,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, content_type)
 
     def _list_md_files(self) -> list:
-        """対象フォルダ内の .md ファイル一覧（隠しフォルダ除外）"""
+        """対象フォルダ内の .md ファイル一覧（隠しフォルダ・シンボリックリンク除外）"""
         files = []
-        for p in sorted(TARGET_DIR.rglob("*.md")):
-            if any(part.startswith(".") for part in p.parts):
-                continue
-            if p.name.endswith(".comments.json"):
-                continue
+        for p in sorted(_iter_md_files(TARGET_DIR)):
             try:
-                rel = p.relative_to(TARGET_DIR)
+                rel = p.relative_to(TARGET_DIR.resolve())
                 files.append({
                     "path": str(rel),
                     "name": p.name,
@@ -349,15 +475,34 @@ class Handler(BaseHTTPRequestHandler):
         return files
 
     def _resolve_md(self, path_str: str) -> Path:
-        """安全にmdファイルパスを解決（ディレクトリトラバーサル防止）"""
-        p = (TARGET_DIR / path_str).resolve()
-        if not str(p).startswith(str(TARGET_DIR.resolve())):
-            raise ValueError("Outside of target dir")
-        if not p.exists() or p.suffix != ".md":
+        """安全にmdファイルパスを解決。
+        Path.is_relative_to() で厳密に検証（startswith 前方一致バグの回避）。
+        さらにシンボリックリンク追従でTARGET_DIR外に出る攻撃も拒否。"""
+        # NUL文字や空文字を弾く
+        if not path_str or "\x00" in path_str:
+            raise ValueError("Invalid path")
+        target = TARGET_DIR.resolve()
+        candidate = (target / path_str).resolve()
+        # is_relative_to は Python 3.9+
+        try:
+            if not candidate.is_relative_to(target):
+                raise ValueError("Outside of target dir")
+        except AttributeError:
+            # 3.8互換のフォールバック（コンポーネント比較）
+            if list(candidate.parts[:len(target.parts)]) != list(target.parts):
+                raise ValueError("Outside of target dir")
+        if not candidate.exists() or candidate.suffix != ".md":
             raise ValueError("Not a markdown file")
-        return p
+        # シンボリックリンク経由の脱出を防ぐ：
+        # candidate.resolve() は既に追従済みなので、上の is_relative_to で十分。
+        return candidate
 
     def do_GET(self):
+        # セキュリティゲート（Host/Origin/トークン）
+        if not self._check_origin():
+            self._send(403, b"Forbidden", "text/plain")
+            return
+
         url = urlparse(self.path)
         path = unquote(url.path)
 
@@ -422,14 +567,28 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/backup-content/"):
             try:
                 rest = path[len("/api/backup-content/"):]
-                bk_path = backup_dir() / rest
+                # ファイル名のみ受け付ける（サブパス・..を一切許容しない）
+                if not rest or "/" in rest or "\x00" in rest:
+                    self._send_json(400, {"error": "invalid filename"})
+                    return
+                # ファイル名形式の最低限のホワイトリスト：YYYYMMDD-HHMMSS__... のみ
+                if not re.match(r'^\d{8}-\d{6}__[^/\\]+\.md$', rest):
+                    self._send_json(400, {"error": "invalid backup filename"})
+                    return
+                bdir = backup_dir().resolve()
+                bk_path = (bdir / rest).resolve()
+                # 厳密なディレクトリ封じ込め
+                try:
+                    if not bk_path.is_relative_to(bdir):
+                        sec_log("DENY", f"backup-content traversal attempt: {rest!r}")
+                        self._send_json(403, {"error": "forbidden"})
+                        return
+                except AttributeError:
+                    if list(bk_path.parts[:len(bdir.parts)]) != list(bdir.parts):
+                        self._send_json(403, {"error": "forbidden"})
+                        return
                 if not bk_path.exists() or not bk_path.is_file():
                     self._send_json(404, {"error": "not found"})
-                    return
-                # 安全：backup_dir 配下に限定
-                bk_path = bk_path.resolve()
-                if not str(bk_path).startswith(str(backup_dir().resolve())):
-                    self._send_json(403, {"error": "forbidden"})
                     return
                 self._send_json(200, {
                     "filename": bk_path.name,
@@ -483,6 +642,16 @@ class Handler(BaseHTTPRequestHandler):
 
         # SSE
         if path == "/events":
+            with LOCK:
+                if len(SSE_CLIENTS) >= MAX_SSE_CLIENTS:
+                    sec_log("DENY", f"SSE limit reached ({MAX_SSE_CLIENTS}), rejecting {self.client_address[0]}")
+                    # ロック内で send は危険なので外で送る
+                    rejected = True
+                else:
+                    rejected = False
+            if rejected:
+                self._send(503, b"Too many SSE clients", "text/plain")
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
@@ -512,17 +681,30 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"Not Found", "text/plain")
 
     def do_POST(self):
+        # セキュリティゲート（Host/Origin/トークン）
+        if not self._check_origin():
+            self._send(403, b"Forbidden", "text/plain")
+            return
+        # POST は全て application/json を要求（CSRF simple-request 経路の遮断）
+        if not self._check_content_type_json():
+            sec_log("DENY", f"non-JSON POST: ct={self.headers.get('Content-Type')!r} from {self.client_address[0]} {self.path}")
+            self._send(415, b"Unsupported Media Type", "text/plain")
+            return
+
         url = urlparse(self.path)
         path = unquote(url.path)
+        sec_log("POST", f"{self.client_address[0]} {path}")
 
         # API: ファイル保存（編集機能・自動バックアップ付き）
         if path.startswith("/api/file/"):
             try:
                 md = self._resolve_md(path[len("/api/file/"):])
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length).decode("utf-8")
+                body = self._read_body().decode("utf-8")
                 payload = json.loads(body)
                 content = payload.get("content", "")
+                # コンテンツも上限を強制
+                if len(content) > MAX_BODY_SIZE:
+                    raise ValueError("content too large")
                 # 上書き前にバックアップ
                 bk = make_backup(md) if md.exists() else None
                 md.write_text(content, encoding="utf-8")
@@ -532,13 +714,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 self._send_json(200, {
-                    "path": str(md.relative_to(TARGET_DIR)),
+                    "path": str(md.relative_to(TARGET_DIR.resolve())),
                     "saved": True,
                     "size": len(content),
                     "backup": bk.name if bk else None,
                     "saved_at": datetime.now().isoformat(timespec="seconds")
                 })
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
             except Exception as e:
+                sec_log("ERR", f"POST /api/file/ failed: {e}")
                 self._send_json(500, {"error": str(e)})
             return
 
@@ -546,19 +731,29 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/restore/"):
             try:
                 md = self._resolve_md(path[len("/api/restore/"):])
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length).decode("utf-8")
+                body = self._read_body().decode("utf-8")
                 payload = json.loads(body)
                 bk_name = payload.get("backup", "")
                 if not bk_name:
                     self._send_json(400, {"error": "backup filename required"})
+                    return
+                # バックアップ名のホワイトリスト検証
+                if "/" in bk_name or "\\" in bk_name or "\x00" in bk_name:
+                    sec_log("DENY", f"restore traversal attempt: {bk_name!r}")
+                    self._send_json(400, {"error": "invalid backup filename"})
+                    return
+                if not re.match(r'^\d{8}-\d{6}__[^/\\]+\.md$', bk_name):
+                    self._send_json(400, {"error": "invalid backup filename format"})
                     return
                 ok = restore_backup(md, bk_name)
                 if ok:
                     self._send_json(200, {"restored": True, "backup": bk_name})
                 else:
                     self._send_json(404, {"error": "backup not found"})
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
             except Exception as e:
+                sec_log("ERR", f"POST /api/restore/ failed: {e}")
                 self._send_json(500, {"error": str(e)})
             return
 
@@ -566,8 +761,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/comments/"):
             try:
                 md = self._resolve_md(path[len("/api/comments/"):])
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length).decode("utf-8")
+                body = self._read_body().decode("utf-8")
                 payload = json.loads(body)
 
                 data = load_comments(md)
@@ -603,10 +797,13 @@ class Handler(BaseHTTPRequestHandler):
                 # SSEで通知
                 notify_sse({
                     "type": "comments_updated",
-                    "file": str(md.relative_to(TARGET_DIR))
+                    "file": str(md.relative_to(TARGET_DIR.resolve()))
                 })
 
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
             except Exception as e:
+                sec_log("ERR", f"POST /api/comments/ failed: {e}")
                 self._send_json(500, {"error": str(e)})
             return
 
@@ -634,15 +831,19 @@ from http.server import ThreadingHTTPServer
 
 
 def main():
-    global TARGET_DIR
+    global TARGET_DIR, ALLOWED_HOSTS, ALLOW_REMOTE, SECURITY_TOKEN
 
     parser = argparse.ArgumentParser(description="法律文書向け Markdown プレビュアー")
     parser.add_argument("target_dir", nargs="?", default=".",
                         help="対象ディレクトリ（既定: カレント）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="バインドアドレス（既定: 127.0.0.1）。0.0.0.0 等で外部公開時はトークン認証必須")
     parser.add_argument("--no-browser", action="store_true",
                         help="ブラウザ自動起動を抑制")
+    parser.add_argument("--allow-remote", action="store_true",
+                        help="0.0.0.0 等のリモートアクセスを許可（トークン認証必須）。"
+                             "依頼者情報を扱う場合は推奨されない。")
     args = parser.parse_args()
 
     TARGET_DIR = Path(args.target_dir).resolve()
@@ -652,6 +853,34 @@ def main():
 
     port = find_free_port(args.port)
 
+    # セキュリティ：リモートアクセス禁止チェック
+    is_local_only_host = args.host in ("127.0.0.1", "localhost", "::1")
+    if not is_local_only_host and not args.allow_remote:
+        print(f"ERROR: --host={args.host} はリモート公開になります。",
+              file=sys.stderr)
+        print("  法律文書を扱うため既定では拒否されます。",
+              file=sys.stderr)
+        print("  どうしても外部公開する場合は --allow-remote を併用してください",
+              file=sys.stderr)
+        print("  （その場合トークン認証が有効化されます）。",
+              file=sys.stderr)
+        sys.exit(2)
+
+    # 許容する Host ヘッダのセット
+    ALLOWED_HOSTS = {
+        f"127.0.0.1:{port}",
+        f"localhost:{port}",
+        f"[::1]:{port}",
+    }
+    if args.allow_remote:
+        ALLOW_REMOTE = True
+        # ランダムトークン生成（Jupyter方式）
+        import secrets
+        SECURITY_TOKEN = secrets.token_urlsafe(24)
+        # Host にバインドアドレスも追加
+        ALLOWED_HOSTS.add(f"{args.host}:{port}")
+        sec_log("INIT", f"--allow-remote 有効。トークン認証を必須化")
+
     # ファイル監視スレッド起動
     watcher_thread = threading.Thread(target=file_watcher, daemon=True)
     watcher_thread.start()
@@ -659,12 +888,21 @@ def main():
     server = ThreadingHTTPServer((args.host, port), Handler)
 
     url = f"http://{args.host}:{port}/"
-    print(f"Markdown Preview Server")
+    if SECURITY_TOKEN:
+        url_with_tok = f"{url}?token={SECURITY_TOKEN}"
+    else:
+        url_with_tok = url
+    print(f"Edix Markdown Preview Server")
     print(f"  Target: {TARGET_DIR}")
-    print(f"  URL:    {url}")
+    print(f"  Bind:   {args.host}:{port}")
+    print(f"  URL:    {url_with_tok}")
+    if ALLOW_REMOTE:
+        print(f"  Token:  {SECURITY_TOKEN}  ← X-Edix-Token ヘッダ or ?token= で渡してください")
+        print(f"  ⚠ リモート公開モード。法律文書では推奨されません。")
     print(f"  Static: {STATIC_DIR}")
     print()
     print("Press Ctrl+C to stop.")
+    sec_log("INIT", f"server started at {url} target={TARGET_DIR}")
 
     try:
         server.serve_forever()

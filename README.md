@@ -152,6 +152,15 @@ comments.json を読む
 
 Python 3.9+ / [`markdown`](https://python-markdown.github.io/) / [`pymdown-extensions`](https://facelessuser.github.io/pymdown-extensions/) / [`python-docx`](https://python-docx.readthedocs.io/)（docx出力用）/ 標準HTML/CSS/JS
 
+## 🔒 セキュリティ
+
+- 既定で `127.0.0.1` のみバインド・他マシンからは見えません
+- `--host 0.0.0.0` 等のリモート公開は **既定で拒否**（`--allow-remote` 必須・自動でトークン認証）
+- ディレクトリトラバーサル・DNS rebinding・CSRF への対策あり
+- 案件フォルダを公開リポジトリに置かないのは利用者責任です
+
+詳細は [SECURITY.md](SECURITY.md) を参照。
+
 ## 📜 License & Author
 
 [MIT License](LICENSE) / [@yutoribengoshi](https://github.com/yutoribengoshi) + Claude Code
